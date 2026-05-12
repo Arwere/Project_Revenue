@@ -1,0 +1,7 @@
+numpy
+pandas
+httpx
+python-dotenv
+backtesting
+solders
+base58
