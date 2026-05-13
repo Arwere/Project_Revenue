@@ -1,57 +1,85 @@
 import os
 from datetime import datetime
-from config import TOKEN_ADDRESS, TOKEN_SYMBOL, DASHBOARD_WIDTH, AGENT_NAME, RISK_LEVEL, TOKEN_NAME
+from typing import Dict, Any
 
-def print_full_dashboard(token_metadata: dict, market_data: dict, stack_results: dict, decision: dict):
+from config import config
+
+
+def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
+
+
+def simple_sparkline(prices, length=8):
+    """Simple ASCII sparkline"""
+    if len(prices) < 2:
+        return "──────"
+    recent = prices[-length:]
+    min_p, max_p = min(recent), max(recent)
+    if max_p == min_p:
+        return "──────"
     
-    price_sol = market_data.get("price_sol", 0)
-    usd_price = market_data.get("usd_price")
-    volume = market_data.get("volume", 0)
-    market_cap = market_data.get("market_cap")
+    spark = "▁▂▃▄▅▆▇█"
+    line = ""
+    for p in recent:
+        idx = int((p - min_p) / (max_p - min_p + 0.000001) * 7)
+        line += spark[idx]
+    return line
 
-    symbol = token_metadata.get("symbol", TOKEN_SYMBOL)
-    name = token_metadata.get("name", TOKEN_NAME)
 
+def print_multi_token_dashboard(all_data: list):
+    clear_screen()
+    
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    final_score = decision.get("final_score", 0)
-
-    print("=" * DASHBOARD_WIDTH)
-    print(f"🚀 {AGENT_NAME} - JUPITER BOT | {now}")
-    print("=" * DASHBOARD_WIDTH)
-    print(f"Token : {name} ({symbol})")
-    print(f"Mint  : {TOKEN_ADDRESS}")
     
-    usd_str = f"${usd_price:.6f}" if usd_price and usd_price > 0 else "N/A"
-    mcap_str = f"${market_cap:,.0f}" if market_cap and market_cap > 0 else "N/A"
-    
-    print(f"Price : {price_sol:.10f} SOL   |   {usd_str}")
-    print(f"Market Cap : {mcap_str}      | 24h Vol : ${volume:,.0f}")
-    print(f"Final Score: {final_score}/10")
-    print("-" * DASHBOARD_WIDTH)
+    print("=" * config.DASHBOARD_WIDTH)
+    print(f"🚀 {config.AGENT_NAME} — PROFESSIONAL MULTI-TOKEN DASHBOARD | {now}")
+    print("=" * config.DASHBOARD_WIDTH)
+    print(f"Monitoring {len(config.TOKENS)} tokens | Mode: {'🟢 LIVE' if not config.DRY_RUN else '🔒 DRY-RUN'} | Data: Birdeye + Jupiter")
+    print("-" * config.DASHBOARD_WIDTH)
 
-    print("🤖 MULTI-STACK RESULTS:")
-    for name, res in decision.get("stack_results", {}).items():
-        ind = res.get("indicators", {})
-        print(f"   {name:15} → Score: {res.get('score', 0):.1f} | {res.get('recommendation', 'NEUTRAL')}")
-    print("-" * DASHBOARD_WIDTH)
+    for item in all_data:
+        tc = item["token_config"]
+        md = item["market_data"]
+        dec = item["decision"]
+        
+        symbol = tc.symbol
+        name = tc.name
+        price_sol = md.get("price_sol", 0)
+        usd = md.get("usd_price")
+        score = dec.get("final_score", 0)
+        action = dec.get("action", "HOLD")
+        rec = dec.get("recommendation", "MONITOR")
 
-    # Risk Management
-    risk_info = decision.get("risk", {})
-    print("💰 RISK MANAGEMENT:")
-    print(f"   Action        : {risk_info.get('action', 'HOLD')}")
-    if risk_info.get("action") == "BUY":
-        print(f"   Size          : {risk_info.get('size_sol', 0)} SOL")
-        print(f"   Stop Loss     : {risk_info.get('stop_loss', 'N/A')}")
-    print("-" * DASHBOARD_WIDTH)
+        # Color coding
+        color = "🟢" if score >= 7.5 else "🟡" if score >= 5 else "🔴"
+        action_color = "🟢" if action in ["BUY", "STRONG_BUY"] else "🔴"
 
-    print("🤖 FINAL DECISION:")
-    print(f"   Recommendation : {decision.get('recommendation', 'MONITOR')}")
-    print(f"   Confidence     : {decision.get('confidence', 0)}/10")
-    print(f"   Risk Level     : {RISK_LEVEL.upper()}")
-    print("-" * DASHBOARD_WIDTH)
+        usd_str = f"${usd:.6f}" if usd and usd > 0 else "N/A"
 
-    print("REASONING:")
-    for line in decision.get("reasoning", ["Waiting for data..."]):
-        print(f"   • {line}")
-    print("=" * DASHBOARD_WIDTH)
+        print(f"{color} {name:<14} ({symbol})")
+        print(f"   Price : {price_sol:.10f} SOL   |   {usd_str}")
+
+        # Sparkline + Trend
+        history = item.get("history", [])
+        if len(history) > 8:
+            spark = simple_sparkline(history)
+            print(f"   Trend : {spark}  (Recent movement)")
+
+        print(f"   Score : {score:.1f}/10    | Action: {action_color} {action:<8} | Rec: {rec}")
+
+        # Agent Stack
+        stack = dec.get("stack_results", {})
+        if stack:
+            parts = [f"{name[:5]}:{res.get('score',0):.1f}" for name, res in stack.items()]
+            print(f"   Agent : {' | '.join(parts)}")
+
+        # Reasoning
+        reasoning = dec.get("reasoning", [])
+        if reasoning:
+            print(f"   Insight: {reasoning[0][:95]}{'...' if len(reasoning[0]) > 95 else ''}")
+
+        print("-" * 95)
+
+    print("=" * config.DASHBOARD_WIDTH)
+    print("💡 Ctrl+C to stop • Live updates every ~12s • Press any key for manual refresh (coming soon)")
+    print("=" * config.DASHBOARD_WIDTH)
