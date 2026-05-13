@@ -1,77 +1,76 @@
-import asyncio
 import time
 from collections import deque
-from typing import Dict
-from config import config
-from data_fetcher import get_full_market_data, get_historical_prices
-from dashboard import print_full_dashboard
+from datetime import datetime
+
+from config import TOKEN_ADDRESS, POLL_SECONDS, AGENT_NAME, DRY_RUN
 from agent import TradingAgent
+from utils import get_token_metadata, get_price_in_sol, get_usd_price, get_24h_volume, get_market_cap
+from dashboard import print_full_dashboard
 from jupiter_client import JupiterClient
 from telegram_notifier import TelegramNotifier
-from wallet import wallet_manager
 
-class TradingSystem:
-    def __init__(self):
-        self.agent = TradingAgent()
-        self.jupiter = JupiterClient()
-        self.notifier = TelegramNotifier()
-        self.price_histories: Dict[str, deque] = {}
-        self.last_status = time.time()
+def main():
+    agent = TradingAgent()
+    jupiter = JupiterClient()
+    notifier = TelegramNotifier()
+    history = deque(maxlen=10000)
 
-        print(f"🚀 {config.AGENT_NAME} Multi-Token System Started!")
-        print(f"Mode: {'🟢 LIVE' if not config.DRY_RUN else '🔒 DRY-RUN'}")
-        print(f"Monitoring {len(config.TOKENS)} tokens\n")
+    print(f"🚀 {AGENT_NAME} Jupiter Bot Started!")
+    print(f"Mode: {'🟢 LIVE' if not DRY_RUN else '🔒 DRY-RUN MODE'}")
+    print(f"Telegram: Enabled (Topic 19)\n")
 
-    def get_history(self, symbol: str):
-        if symbol not in self.price_histories:
-            self.price_histories[symbol] = deque(maxlen=config.MAX_HISTORY_POINTS)
-        return self.price_histories[symbol]
+    last_status_time = time.time()
 
-    async def process_token(self, token_key: str):
-        token_config = config.TOKENS[token_key]
-        symbol = token_config.symbol
-
+    while True:
         try:
-            market_data = await get_full_market_data(token_config.address)
-            history = self.get_history(symbol)
-            
-            prices_list = await get_historical_prices(token_config.address, limit=600)
-            for p in prices_list:
-                if p > 0:
-                    history.append(p)
+            token_metadata = get_token_metadata()
+            price_sol = get_price_in_sol()
 
-            decision = self.agent.get_risk_adjusted_decision(
-                token_config=token_config,
-                market_data=market_data,
-                prices=list(history)
-            )
+            history.append({"price_sol": price_sol})
+            prices = [s["price_sol"] for s in history if s["price_sol"] > 0]
 
-            print_full_dashboard(token_config, market_data, decision)
+            market_data = {
+                "price_sol": price_sol,
+                "usd_price": get_usd_price(),
+                "volume": get_24h_volume(token_metadata),
+                "market_cap": get_market_cap(token_metadata)
+            }
 
-            # Dry-run only for now
-            if decision.get("action") == "BUY" and decision.get("final_score", 0) >= 7.5:
-                print(f"   → Strong Buy Signal on {symbol} (Dry Run)")
+            decision = agent.get_risk_adjusted_decision(market_data, prices)
 
+            print_full_dashboard(token_metadata, market_data, decision.get("stack_results", {}), decision)
+
+            # === TELEGRAM ALERTS ===
+            current_score = decision.get("final_score", 0)
+
+            if decision.get("action") == "BUY":
+                size_sol = decision.get("risk", {}).get("size_sol", 0)
+                notifier.send_strong_buy(
+                    token_symbol=token_metadata.get("symbol", "MM"),
+                    price=price_sol,
+                    size_sol=size_sol,
+                    score=current_score
+                )
+
+            # Status Update every 30 minutes
+            if time.time() - last_status_time > 1800:   # 30 minutes
+                action = decision.get("action", "HOLD")
+                notifier.send_status_update(
+                    token_symbol=token_metadata.get("symbol", "MM"),
+                    score=current_score,
+                    price=price_sol,
+                    action=action
+                )
+                last_status_time = time.time()
+
+        except KeyboardInterrupt:
+            print("\n\n🛑 Bot stopped by user.")
+            notifier.send_message("🛑 Bot has been stopped by user.")
+            break
         except Exception as e:
-            print(f"Error processing {symbol}: {e}")
+            print(f"Error: {e}")
 
-    async def run(self):
-        if not wallet_manager.load():
-            print("⚠️ Wallet not loaded - some features disabled")
-
-        while True:
-            try:
-                tasks = [self.process_token(key) for key in config.TOKENS.keys()]
-                await asyncio.gather(*tasks)
-            except KeyboardInterrupt:
-                print("\n\n🛑 Bot stopped by user.")
-                break
-            except Exception as e:
-                print(f"Critical error: {e}")
-
-            await asyncio.sleep(config.POLL_SECONDS)
-
+        time.sleep(POLL_SECONDS)
 
 if __name__ == "__main__":
-    system = TradingSystem()
-    asyncio.run(system.run())
+    main()
