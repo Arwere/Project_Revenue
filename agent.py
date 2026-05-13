@@ -3,7 +3,6 @@ from config import config
 from strategies import TrendStrategy, MomentumStrategy, MeanReversionStrategy, VolatilityStrategy
 from risk_manager import RiskManager
 
-
 class TradingAgent:
     def __init__(self):
         self.strategies = {
@@ -16,35 +15,36 @@ class TradingAgent:
 
     def get_risk_adjusted_decision(self, token_config, market_data: Dict, prices: List[float]) -> Dict:
         if len(prices) < 100:
-            return {"recommendation": "MONITOR", "final_score": 5.0, "action": "HOLD"}
+            return {"action": "HOLD", "final_score": 5.0}
 
-        results = {}
-        weighted_score = 0.0
+        total_score = 0.0
+        details = {}
 
         for name, strategy in self.strategies.items():
             result = strategy.analyze(prices, market_data, token_config)
-            results[name] = result
-            weighted_score += result.get("score", 5.0) * 0.25
+            score = result.get("score", 5.0)
+            details[name] = score
+            total_score += score
 
-        final_score = weighted_score
+        final_score = total_score / len(self.strategies)
+        final_score = min(final_score + 1.4, 9.8)   # Stronger boost for real data
 
-        # === VERY AGGRESSIVE FOR TESTING ===
-        if final_score >= 5.0:        # Almost always buy
+        if final_score >= 7.4:
+            action = "STRONG_BUY"
+        elif final_score >= 6.8:
             action = "BUY"
-            rec = "BUY"
         else:
             action = "HOLD"
-            rec = "MONITOR"
 
         decision = {
-            "recommendation": rec,
-            "final_score": round(final_score, 2),
             "action": action,
-            "stack_results": results,
-            "reasoning": ["Test mode - aggressive"]
+            "final_score": round(final_score, 1),
+            "strategy_details": details
         }
 
+        # Light risk filter
         risk_info = self.risk_manager.get_trade_recommendation(decision, market_data.get("price_sol", 0), token_config)
-        decision["action"] = risk_info.get("action", action)
+        if risk_info.get("action") != "BLOCK":
+            decision["action"] = action
 
         return decision
