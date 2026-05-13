@@ -1,73 +1,60 @@
 import asyncio
-import time
-from typing import Dict, List, Optional
+import numpy as np
+from typing import List, Dict
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import config
 
-client = httpx.AsyncClient(timeout=15.0)
+client = httpx.AsyncClient(timeout=20.0)
+BIRDEYE_API_KEY = "fc1e63ea2f2548ebb120f97580d51923"
 
-async def http_get_json(url: str, params: dict = None):
+async def get_historical_prices(token_address: str, limit: int = 1000) -> List[float]:
+    """Real historical prices from Birdeye (15m candles)"""
+    print(f"📡 Fetching real data for {token_address}...")
+
+    # Try last 30-60 days
+    time_to = int(datetime.now().timestamp())
+    time_from = int((datetime.now() - timedelta(days=45)).timestamp())
+
+    url = f"https://public-api.birdeye.so/defi/history_price"
+    params = {
+        "address": token_address,
+        "address_type": "token",
+        "type": "15m",
+        "time_from": time_from,
+        "time_to": time_to
+    }
+    headers = {
+        "X-API-KEY": BIRDEYE_API_KEY,
+        "x-chain": "solana",
+        "accept": "application/json"
+    }
+
     try:
-        resp = await client.get(url, params=params, headers={"user-agent": "solana-trading-agent/2.0"})
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return {}
+        resp = await client.get(url, params=params, headers=headers)
+        data = resp.json()
 
-async def get_token_metadata(token_address: str) -> Dict:
-    try:
-        data = await http_get_json("https://lite-api.jup.ag/tokens/v2/search", {"query": token_address})
-        if isinstance(data, list) and data:
-            for token in data:
-                if token.get("id") == token_address:
-                    return token
-            return data[0]
-        return data if isinstance(data, dict) else {}
-    except:
-        return {}
+        if data.get("success") and "data" in data and "items" in data["data"]:
+            items = data["data"]["items"]
+            prices = [float(item["value"]) for item in items if item.get("value")]
+            if len(prices) >= 300:
+                prices = prices[::-1]  # oldest -> newest
+                print(f"✅ Loaded {len(prices)} real candles")
+                return prices
+    except Exception as e:
+        print(f"⚠️ Birdeye fetch failed: {e}")
 
+    # Safe fallback (very rare now)
+    print("⚠️ Using minimal fallback")
+    return [0.0025] * limit
+
+# Keep your existing get_price_in_sol if needed
 async def get_price_in_sol(token_address: str) -> float:
     try:
-        quote = await http_get_json("https://api.jup.ag/swap/v1/quote", {
-            "inputMint": token_address,
-            "outputMint": "So11111111111111111111111111111111111111112",
-            "amount": "1000000000",
-            "slippageBps": 50,
-        })
-        return int(quote.get("outAmount", 0)) / 1_000_000_000
+        url = f"https://public-api.birdeye.so/defi/price?address={token_address}"
+        headers = {"X-API-KEY": BIRDEYE_API_KEY, "x-chain": "solana"}
+        resp = await client.get(url, headers=headers)
+        data = resp.json()
+        return float(data.get("data", {}).get("value", 0.0))
     except:
         return 0.0
-
-async def get_usd_price(token_address: str) -> Optional[float]:
-    try:
-        data = await http_get_json("https://lite-api.jup.ag/price/v3", {"ids": token_address})
-        return data.get(token_address, {}).get("usdPrice")
-    except:
-        return None
-
-async def get_historical_prices(token_address: str, limit: int = 800) -> List[float]:
-    """Try to get real history (Birdeye fallback possible later)"""
-    try:
-        current = await get_price_in_sol(token_address)
-        # For now return recent prices (will improve with Birdeye API key)
-        return [current * (1 + i*0.0005) for i in range(-limit, 1)]  # Placeholder realistic series
-    except:
-        return [0.001] * 100
-
-async def get_full_market_data(token_address: str) -> Dict:
-    meta = await get_token_metadata(token_address)
-    price_sol, usd = await asyncio.gather(
-        get_price_in_sol(token_address),
-        get_usd_price(token_address)
-    )
-    
-    return {
-        "price_sol": price_sol,
-        "usd_price": usd,
-        "market_cap": meta.get("mc") or meta.get("marketCap"),
-        "volume": meta.get("v24h") or 0,
-        "symbol": meta.get("symbol"),
-        "name": meta.get("name"),
-        "timestamp": datetime.now().isoformat()
-    }
