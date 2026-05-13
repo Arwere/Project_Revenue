@@ -1,82 +1,98 @@
-from typing import Dict, List
-from indicators import get_all_indicators
-from config import config
+import numpy as np
+import pandas as pd
+from typing import List, Dict
 
+def get_indicators_on_tf(prices: List[float]):
+    if len(prices) < 30:
+        return {"rsi": 50, "price_vs_sma20": 0, "macd_hist": 0, "volatility": 5.0}
 
-def get_indicators_on_tf(prices: List[float], tf_key: str, token_config=None):
-    tf_map = {"trend": 100, "momentum": 50, "mean_reversion": 40, "volatility": 60}
-    tf = tf_map.get(tf_key, 60)
-    if token_config and hasattr(token_config, 'timeframes'):
-        tf = token_config.timeframes.get(tf_key, tf)
+    prices = np.array(prices)
+    delta = np.diff(prices)
+    gain = np.maximum(delta, 0)
+    loss = np.abs(np.minimum(delta, 0))
     
-    recent = prices[-tf:] if len(prices) >= tf else prices
-    return get_all_indicators(recent)
+    avg_gain = pd.Series(gain).rolling(14).mean().iloc[-1]
+    avg_loss = pd.Series(loss).rolling(14).mean().iloc[-1]
+    rs = avg_gain / avg_loss if avg_loss > 0 else 100
+    rsi = 100 - (100 / (1 + rs))
 
+    sma20 = np.mean(prices[-20:])
+    price_vs_sma20 = (prices[-1] - sma20) / sma20 * 100
 
-class TrendStrategy:
-    def analyze(self, prices: List[float], market_data: Dict = None, token_config=None):
-        ind = get_indicators_on_tf(prices, "trend", token_config)
-        score = 5.0
+    ema12 = pd.Series(prices).ewm(span=12, adjust=False).mean().iloc[-1]
+    ema26 = pd.Series(prices).ewm(span=26, adjust=False).mean().iloc[-1]
+    macd = ema12 - ema26
+    signal = pd.Series(prices).ewm(span=9, adjust=False).mean().iloc[-1]
+    macd_hist = macd - signal
 
-        if ind.get("price_vs_sma20", 0) > 1.8 and ind.get("macd_histogram", 0) > 0:
-            score += 3.2
-        elif ind.get("price_vs_sma20", 0) > 0.8:
-            score += 1.5
+    volatility = np.std(prices[-20:]) / np.mean(prices[-20:]) * 100 if len(prices) > 20 else 5.0
 
-        return {
-            "name": "Trend",
-            "score": round(min(10.0, max(2.0, score)), 1),
-            "recommendation": "BULLISH" if score >= 7.5 else "NEUTRAL",
-            "reason": "Uptrend detected" if score >= 7.5 else "Neutral trend"
-        }
-
-
-class MomentumStrategy:
-    def analyze(self, prices: List[float], market_data: Dict = None, token_config=None):
-        ind = get_indicators_on_tf(prices, "momentum", token_config)
-        score = 5.0
-        rsi = ind.get("rsi", 50)
-
-        if rsi < 33:
-            score += 3.8
-        elif rsi < 40:
-            score += 2.0
-
-        return {
-            "name": "Momentum",
-            "score": round(min(10.0, max(2.0, score)), 1),
-            "recommendation": "BUY" if score >= 7.5 else "NEUTRAL",
-            "reason": f"Oversold (RSI {rsi:.1f})" if rsi < 40 else "No momentum"
-        }
+    return {
+        "rsi": rsi,
+        "price_vs_sma20": price_vs_sma20,
+        "macd_hist": macd_hist,
+        "volatility": volatility
+    }
 
 
 class MeanReversionStrategy:
-    def analyze(self, prices: List[float], market_data: Dict = None, token_config=None):
-        ind = get_indicators_on_tf(prices, "mean_reversion", token_config)
+    def analyze(self, prices: List[float], market_data=None, token_config=None):
+        ind = get_indicators_on_tf(prices)
         score = 5.0
 
-        if ind.get("price_vs_sma20", 0) < -2.5:
-            score += 3.5
+        if ind["price_vs_sma20"] < -5.5 and ind["rsi"] < 35:
+            score += 4.5
+        elif ind["price_vs_sma20"] < -3.8 and ind["rsi"] < 40:
+            score += 3.2
+        elif ind["price_vs_sma20"] < -2.5 and ind["rsi"] < 45:
+            score += 1.8
 
-        return {
-            "name": "MeanReversion",
-            "score": round(min(10.0, max(2.0, score)), 1),
-            "recommendation": "BUY" if score >= 7.8 else "NEUTRAL",
-            "reason": "Dip detected" if score >= 7.8 else "No reversion"
-        }
+        if ind["macd_hist"] > 0:
+            score += 1.1
+        if ind["volatility"] > 7.5:
+            score += 0.9
+
+        return {"score": min(score, 9.8), "reason": "Mean Reversion"}
+
+
+class TrendStrategy:
+    def analyze(self, prices: List[float], market_data=None, token_config=None):
+        ind = get_indicators_on_tf(prices)
+        score = 5.0
+        if ind["price_vs_sma20"] > 2.2 and ind["rsi"] > 53:
+            score += 2.8
+        return {"score": score, "reason": "Trend"}
+
+
+class MomentumStrategy:
+    def analyze(self, prices: List[float], market_data=None, token_config=None):
+        ind = get_indicators_on_tf(prices)
+        score = 5.0
+        if ind["rsi"] > 63 and ind["macd_hist"] > 0.001:
+            score += 2.7
+        return {"score": score, "reason": "Momentum"}
 
 
 class VolatilityStrategy:
-    def analyze(self, prices: List[float], market_data: Dict = None, token_config=None):
-        ind = get_indicators_on_tf(prices, "volatility", token_config)
+    def analyze(self, prices: List[float], market_data=None, token_config=None):
+        ind = get_indicators_on_tf(prices)
         score = 5.0
+        if 7 < ind["volatility"] < 22:
+            score += 2.3
+        return {"score": score, "reason": "Volatility"}
 
-        if ind.get("volatility_percent", 0) > 9 and ind.get("price_vs_sma20", 0) < -2.0:
-            score += 3.2
 
-        return {
-            "name": "Volatility",
-            "score": round(min(10.0, max(2.0, score)), 1),
-            "recommendation": "BUY" if score >= 7.7 else "NEUTRAL",
-            "reason": "Volatility dip" if score >= 7.7 else "Normal vol"
-        }
+def get_all_strategy_results(prices: List[float], market_data=None, token_config=None):
+    strategies = [MeanReversionStrategy(), TrendStrategy(), MomentumStrategy(), VolatilityStrategy()]
+    total = 0.0
+    for s in strategies:
+        res = s.analyze(prices, market_data, token_config)
+        total += res["score"]
+
+    final_score = total / len(strategies)
+    action = "STRONG_BUY" if final_score >= 7.8 else "BUY" if final_score >= 6.8 else "HOLD"
+
+    return {
+        "action": action,
+        "final_score": round(final_score, 1)
+    }
