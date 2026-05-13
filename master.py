@@ -1,76 +1,80 @@
+import asyncio
 import time
 from collections import deque
-from datetime import datetime
+from typing import Dict
 
-from config import TOKEN_ADDRESS, POLL_SECONDS, AGENT_NAME, DRY_RUN
+from config import config
+from data_fetcher import get_full_market_data, get_historical_prices
+from dashboard import print_multi_token_dashboard
 from agent import TradingAgent
-from utils import get_token_metadata, get_price_in_sol, get_usd_price, get_24h_volume, get_market_cap
-from dashboard import print_full_dashboard
-from jupiter_client import JupiterClient
-from telegram_notifier import TelegramNotifier
+from wallet import wallet_manager
 
-def main():
-    agent = TradingAgent()
-    jupiter = JupiterClient()
-    notifier = TelegramNotifier()
-    history = deque(maxlen=10000)
 
-    print(f"🚀 {AGENT_NAME} Jupiter Bot Started!")
-    print(f"Mode: {'🟢 LIVE' if not DRY_RUN else '🔒 DRY-RUN MODE'}")
-    print(f"Telegram: Enabled (Topic 19)\n")
+class TradingSystem:
+    def __init__(self):
+        self.agent = TradingAgent()
+        self.price_histories: Dict[str, deque] = {}
+        self.running = True
 
-    last_status_time = time.time()
+        print(f"🚀 {config.AGENT_NAME} — Glam Dashboard Mode Activated!")
+        print(f"Monitoring {len(config.TOKENS)} tokens\n")
 
-    while True:
+    def get_history(self, symbol: str):
+        if symbol not in self.price_histories:
+            self.price_histories[symbol] = deque(maxlen=config.MAX_HISTORY_POINTS)
+        return self.price_histories[symbol]
+
+    async def process_token(self, token_key: str):
+        token_config = config.TOKENS[token_key]
+        symbol = token_config.symbol
+
         try:
-            token_metadata = get_token_metadata()
-            price_sol = get_price_in_sol()
+            market_data = await get_full_market_data(token_config.address)
+            history = self.get_history(symbol)
+            
+            prices = await get_historical_prices(token_config.address, limit=120)
+            for p in prices:
+                if p > 0:
+                    history.append(p)
 
-            history.append({"price_sol": price_sol})
-            prices = [s["price_sol"] for s in history if s["price_sol"] > 0]
+            decision = self.agent.get_risk_adjusted_decision(
+                token_config=token_config,
+                market_data=market_data,
+                prices=list(history)
+            )
 
-            market_data = {
-                "price_sol": price_sol,
-                "usd_price": get_usd_price(),
-                "volume": get_24h_volume(token_metadata),
-                "market_cap": get_market_cap(token_metadata)
+            return {
+                "token_config": token_config,
+                "market_data": market_data,
+                "decision": decision,
+                "history": list(history)[-30:]   # Last 30 prices for sparkline
             }
 
-            decision = agent.get_risk_adjusted_decision(market_data, prices)
-
-            print_full_dashboard(token_metadata, market_data, decision.get("stack_results", {}), decision)
-
-            # === TELEGRAM ALERTS ===
-            current_score = decision.get("final_score", 0)
-
-            if decision.get("action") == "BUY":
-                size_sol = decision.get("risk", {}).get("size_sol", 0)
-                notifier.send_strong_buy(
-                    token_symbol=token_metadata.get("symbol", "MM"),
-                    price=price_sol,
-                    size_sol=size_sol,
-                    score=current_score
-                )
-
-            # Status Update every 30 minutes
-            if time.time() - last_status_time > 1800:   # 30 minutes
-                action = decision.get("action", "HOLD")
-                notifier.send_status_update(
-                    token_symbol=token_metadata.get("symbol", "MM"),
-                    score=current_score,
-                    price=price_sol,
-                    action=action
-                )
-                last_status_time = time.time()
-
-        except KeyboardInterrupt:
-            print("\n\n🛑 Bot stopped by user.")
-            notifier.send_message("🛑 Bot has been stopped by user.")
-            break
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error processing {symbol}: {e}")
+            return None
 
-        time.sleep(POLL_SECONDS)
+    async def run(self):
+        wallet_manager.load()
+        print("✅ Glam Dashboard Running...\n")
+
+        try:
+            while self.running:
+                tasks = [self.process_token(key) for key in config.TOKENS.keys()]
+                results = await asyncio.gather(*tasks)
+
+                valid_results = [r for r in results if r is not None]
+                if valid_results:
+                    print_multi_token_dashboard(valid_results)
+
+                await asyncio.sleep(config.POLL_SECONDS)
+
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            print("\n\n🛑 Stopped gracefully.")
+        finally:
+            print("👋 Multi_Token_Agent stopped.")
+
 
 if __name__ == "__main__":
-    main()
+    system = TradingSystem()
+    asyncio.run(system.run())
