@@ -1,80 +1,58 @@
 import asyncio
 import time
-from collections import deque
-from typing import Dict
-
+from liquidity_kraken import LiquidityKraken
+from depth_destroyer import DepthDestroyer
+from tide_titan import TideTitan
 from config import config
-from data_fetcher import get_full_market_data, get_historical_prices
-from dashboard import print_multi_token_dashboard
-from agent import TradingAgent
-from wallet import wallet_manager
 
+# Global status storage
+bot_status = {}
 
-class TradingSystem:
-    def __init__(self):
-        self.agent = TradingAgent()
-        self.price_histories: Dict[str, deque] = {}
-        self.running = True
+async def main():
+    print("🚀 Starting Master Controller - 3 Specialized Trading Bots")
+    print("="*100)
 
-        print(f"🚀 {config.AGENT_NAME} — Glam Dashboard Mode Activated!")
-        print(f"Monitoring {len(config.TOKENS)} tokens\n")
+    bots = {}
+    for token_key in config.TOKENS.keys():
+        symbol = config.TOKENS[token_key].symbol
+        if "TROLL" in symbol.upper():
+            bots[token_key] = LiquidityKraken(token_key)
+            bot_status[token_key] = {"name": "LIQUIDITY KRAKEN", "symbol": symbol}
+        elif "WHALE" in symbol.upper():
+            bots[token_key] = DepthDestroyer(token_key)
+            bot_status[token_key] = {"name": "DEPTH DESTROYER", "symbol": symbol}
+        else:
+            bots[token_key] = TideTitan(token_key)
+            bot_status[token_key] = {"name": "TIDE TITAN", "symbol": symbol}
 
-    def get_history(self, symbol: str):
-        if symbol not in self.price_histories:
-            self.price_histories[symbol] = deque(maxlen=config.MAX_HISTORY_POINTS)
-        return self.price_histories[symbol]
+        print(f"✅ Deployed {bot_status[token_key]['name']} → {symbol}")
 
-    async def process_token(self, token_key: str):
-        token_config = config.TOKENS[token_key]
-        symbol = token_config.symbol
+    print("\nAll bots deployed. Live monitoring started.\n")
+    print("="*100)
 
-        try:
-            market_data = await get_full_market_data(token_config.address)
-            history = self.get_history(symbol)
-            
-            prices = await get_historical_prices(token_config.address, limit=120)
-            for p in prices:
-                if p > 0:
-                    history.append(p)
+    cycle = 0
+    while True:
+        cycle += 1
+        
+        # Run all bots
+        tasks = [bot.tick() for bot in bots.values()]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-            decision = self.agent.get_risk_adjusted_decision(
-                token_config=token_config,
-                market_data=market_data,
-                prices=list(history)
-            )
+        # Clean status display every 5 cycles
+        if cycle % 5 == 0:
+            print(f"\n📊 LIVE STATUS - {time.strftime('%H:%M:%S')} (Cycle {cycle})")
+            print("-" * 100)
+            for key, status in bot_status.items():
+                symbol = status["symbol"]
+                print(f"{status['name']:<18} | {symbol:<12} | Status: Monitoring")
+            print("-" * 100)
 
-            return {
-                "token_config": token_config,
-                "market_data": market_data,
-                "decision": decision,
-                "history": list(history)[-30:]   # Last 30 prices for sparkline
-            }
-
-        except Exception as e:
-            print(f"Error processing {symbol}: {e}")
-            return None
-
-    async def run(self):
-        wallet_manager.load()
-        print("✅ Glam Dashboard Running...\n")
-
-        try:
-            while self.running:
-                tasks = [self.process_token(key) for key in config.TOKENS.keys()]
-                results = await asyncio.gather(*tasks)
-
-                valid_results = [r for r in results if r is not None]
-                if valid_results:
-                    print_multi_token_dashboard(valid_results)
-
-                await asyncio.sleep(config.POLL_SECONDS)
-
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            print("\n\n🛑 Stopped gracefully.")
-        finally:
-            print("👋 Multi_Token_Agent stopped.")
-
+        await asyncio.sleep(8)
 
 if __name__ == "__main__":
-    system = TradingSystem()
-    asyncio.run(system.run())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n\n👋 Master Controller stopped.")
+    except Exception as e:
+        print(f"\n💥 Error: {e}")
