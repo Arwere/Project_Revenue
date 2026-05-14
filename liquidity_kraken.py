@@ -8,14 +8,14 @@ from wallet import load_wallet
 from config import config
 
 class LiquidityKraken:
-    """High-volume / LP focused bot"""
+    """High-volume / LP focused bot - Best for TROLL"""
     
     def __init__(self, token_key: str):
         self.token_key = token_key
         self.config = config.TOKENS[token_key]
         self.agent = TradingAgent()
         self.jupiter = JupiterClient()
-        self.wallet = load_wallet()   # Using your existing wallet loader
+        self.wallet = load_wallet()
         
         self.position = 0.0
         self.entry_price = 0.0
@@ -50,7 +50,7 @@ class LiquidityKraken:
             print(f"[LIQUIDITY KRAKEN] Error: {e}")
 
     async def _execute_buy(self, price: float, decision: dict):
-        amount_sol = 0.5 * decision.get("suggested_capital_percent", 0.3)   # Conservative for now
+        amount_sol = self.wallet.get_available_sol() * decision.get("suggested_capital_percent", 0.25)
         if amount_sol < 0.05:
             return
 
