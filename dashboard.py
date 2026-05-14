@@ -1,5 +1,6 @@
 import asyncio
 import time
+import os
 from data_fetcher import get_price_in_sol, get_historical_prices
 from agent import Poseidon
 from config import config
@@ -10,7 +11,7 @@ async def monitor_token(token_key: str):
     token_config = config.TOKENS[token_key]
     agent = Poseidon()
     
-    print(f"📡 Monitor started for {token_config.symbol}")
+    print(f"📡 Monitor started → {token_config.symbol}")
     
     while True:
         try:
@@ -36,41 +37,49 @@ async def monitor_token(token_key: str):
                 "last_update": time.time()
             }
 
-        except Exception as e:
-            print(f"Monitor error for {token_config.symbol}: {e}")
+        except Exception:
+            pass
+        await asyncio.sleep(7)
 
-        await asyncio.sleep(6)  # Balanced update rate
+
+def clear_screen():
+    os.system('cls' if os.name == 'nt' else 'clear')
 
 
-def print_dashboard():
-    print("\n" + "="*120)
-    print(f"🌊 POSEIDON LIVE DASHBOARD - {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*120)
+def print_moon_tide_dashboard():
+    clear_screen()
+    print("="*150)
+    print(f"🌊 MOON TIDE DASHBOARD - {time.strftime('%Y-%m-%d %H:%M:%S')} | DRY RUN MODE")
+    print("="*150)
+    print(f"🤖 AGENT: POSEIDON (Multi-Timeframe Analysis)")
+    print("-"*150)
+    print(f"{'BOT NAME':<20} {'SYMBOL':<12} {'PRICE (SOL)':<15} {'SCORE':<8} {'ACTION':<12} {'STATUS'}")
+    print("-"*150)
 
-    if not token_states:
-        print("Waiting for first data from monitors...")
-    else:
-        for key, state in token_states.items():
-            symbol = state.get("symbol", key)
-            price = state.get("price", 0)
-            score = state.get("score", 0)
-            action = state.get("action", "HOLD")
-            
-            color = "🟢" if action in ["BUY", "STRONG_BUY"] else "🔴" if action == "SELL" else "⚪"
-            print(f"{color} {symbol:<12} | Price: {price:.8f} SOL | Score: {score:.1f} | Action: {action:<12}")
+    for key, state in token_states.items():
+        symbol = state.get("symbol", key)
+        price = state.get("price", 0)
+        score = state.get("score", 0)
+        action = state.get("action", "HOLD")
+        
+        color = "🟢" if action in ["BUY", "STRONG_BUY"] else "🔴" if action == "SELL" else "⚪"
+        bot_name = "LIQUIDITY KRAKEN" if "TROLL" in symbol.upper() else "DEPTH DESTROYER" if "WHALE" in symbol.upper() else "TIDE TITAN"
+        
+        print(f"{color} {bot_name:<18} {symbol:<12} {price:.8f}      {score:.1f}     {action:<12} Monitoring")
 
-    print("="*120)
+    print("-"*150)
+    print("📌 Poseidon is actively monitoring all 3 tokens | Dry Run Mode | Ctrl+C to stop")
+    print("="*150)
 
 
 async def main():
-    print("Starting Poseidon Live Dashboard...\n")
+    print("Starting Moon Tide Dashboard...\n")
     
-    # Start monitors
-    monitor_tasks = [monitor_token(key) for key in config.TOKENS.keys()]
+    for key in config.TOKENS.keys():
+        asyncio.create_task(monitor_token(key))
     
-    # Dashboard display loop
     while True:
-        print_dashboard()
+        print_moon_tide_dashboard()
         await asyncio.sleep(8)
 
 
@@ -78,6 +87,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nDashboard stopped by user.")
+        print("\n\nMoon Tide Dashboard stopped by user.")
     except Exception as e:
-        print(f"Dashboard crashed: {e}")
+        print(f"Dashboard error: {e}")
