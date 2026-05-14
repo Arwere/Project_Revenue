@@ -1,22 +1,18 @@
-cat > tide_titan.py << 'EOF'
 import asyncio
 import time
-from agent import TradingAgent
+from agent import Poseidon
 from data_fetcher import get_price_in_sol, get_historical_prices
-from jupiter_client import JupiterClient
-from wallet import load_wallet
+from telegram_notifier import notifier
 from config import config
 
 class TideTitan:
     """Balanced steady trader bot"""
     
-    def __init__(self, token_key: str):
+    def __init__(self, token_key: str, dry_run=True):
         self.token_key = token_key
         self.config = config.TOKENS[token_key]
-        self.agent = TradingAgent()
-        self.jupiter = JupiterClient()
-        self.wallet = load_wallet()
-        
+        self.agent = Poseidon()          # Updated to Poseidon
+        self.dry_run = dry_run
         self.position = 0.0
         self.entry_price = 0.0
         self.cooldown_until = 0
@@ -42,34 +38,15 @@ class TideTitan:
                 return
 
             if action in ["BUY", "STRONG_BUY"] and self.position == 0:
-                await self._execute_buy(current_price, decision)
+                capital = decision.get("suggested_capital_percent", 0.0) * 100
+                msg = f"<b>🟢 TIDE TITAN</b>\n{self.config.symbol}: BUY Signal\nScore: {score:.1f}\nCapital: {capital:.1f}%\nPrice: {current_price:.8f}"
+                await notifier.send_message(msg)
+                print(f"[TIDE TITAN] → BUY SIGNAL on {self.config.symbol}")
+
             elif action == "SELL" and self.position > 0:
-                await self._execute_sell(current_price, decision)
+                msg = f"<b>🔴 TIDE TITAN</b>\n{self.config.symbol}: SELL Signal\nPrice: {current_price:.8f}"
+                await notifier.send_message(msg)
+                print(f"[TIDE TITAN] → SELL SIGNAL on {self.config.symbol}")
 
         except Exception as e:
             print(f"[TIDE TITAN] Error: {e}")
-
-    async def _execute_buy(self, price: float, decision: dict):
-        amount_sol = self.wallet.get_available_sol() * decision.get("suggested_capital_percent", 0.25)
-        if amount_sol < 0.05:
-            return
-        print(f"[TIDE TITAN] Executing BUY {amount_sol:.4f} SOL → {self.config.symbol}")
-        tx = await self.jupiter.swap_sol_to_token(self.config.address, amount_sol, slippage=1.2)
-        if tx:
-            self.position = (amount_sol / price) * 0.98
-            self.entry_price = price
-            print(f"[TIDE TITAN] BUY SUCCESS")
-
-    async def _execute_sell(self, price: float, decision: dict):
-        if self.position <= 0:
-            return
-        print(f"[TIDE TITAN] Executing SELL")
-        tx = await self.jupiter.swap_token_to_sol(self.config.address, self.position, slippage=1.2)
-        if tx:
-            self.position = 0.0
-            self.cooldown_until = time.time() + 300
-            print(f"[TIDE TITAN] SELL SUCCESS")
-
-if __name__ == "__main__":
-    print("Tide Titan initialized")
-EOF
