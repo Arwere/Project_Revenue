@@ -1,3 +1,4 @@
+cat > liquidity_kraken.py << 'EOF'
 import asyncio
 import time
 from agent import TradingAgent
@@ -7,11 +8,13 @@ from config import config
 class LiquidityKraken:
     """High-volume / LP focused bot"""
     
-    def __init__(self, token_key: str):
+    def __init__(self, token_key: str, dry_run=True):
         self.token_key = token_key
         self.config = config.TOKENS[token_key]
         self.agent = TradingAgent()
+        self.dry_run = dry_run
         self.position = 0.0
+        self.entry_price = 0.0
         self.cooldown_until = 0
 
     async def tick(self):
@@ -28,7 +31,6 @@ class LiquidityKraken:
             action = decision.get("action", "HOLD")
             score = decision.get("final_score", 0)
 
-            # Only print meaningful actions
             if action != "HOLD" or score >= 7.0:
                 print(f"[LIQUIDITY KRAKEN - {self.config.symbol}] Price: {current_price:.8f} | Score: {score:.1f} | Action: {action}")
 
@@ -36,9 +38,16 @@ class LiquidityKraken:
                 return
 
             if action in ["BUY", "STRONG_BUY"] and self.position == 0:
-                print(f"[LIQUIDITY KRAKEN] → BUY SIGNAL on {self.config.symbol}")
+                if self.dry_run:
+                    print(f"[DRY RUN] LIQUIDITY KRAKEN would BUY {self.config.symbol}")
+                else:
+                    print(f"[LIVE] LIQUIDITY KRAKEN executing BUY on {self.config.symbol}")
             elif action == "SELL" and self.position > 0:
-                print(f"[LIQUIDITY KRAKEN] → SELL SIGNAL on {self.config.symbol}")
+                if self.dry_run:
+                    print(f"[DRY RUN] LIQUIDITY KRAKEN would SELL {self.config.symbol}")
+                else:
+                    print(f"[LIVE] LIQUIDITY KRAKEN executing SELL on {self.config.symbol}")
 
         except Exception as e:
             print(f"[LIQUIDITY KRAKEN] Error: {e}")
+EOF
