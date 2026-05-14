@@ -3,16 +3,20 @@ import asyncio
 import time
 from agent import TradingAgent
 from data_fetcher import get_price_in_sol, get_historical_prices
+from jupiter_client import JupiterClient
+from wallet import load_wallet
 from config import config
 
 class LiquidityKraken:
     """High-volume / LP focused bot"""
     
-    def __init__(self, token_key: str, dry_run=True):
+    def __init__(self, token_key: str):
         self.token_key = token_key
         self.config = config.TOKENS[token_key]
         self.agent = TradingAgent()
-        self.dry_run = dry_run
+        self.jupiter = JupiterClient()
+        self.wallet = load_wallet()   # Using your existing wallet loader
+        
         self.position = 0.0
         self.entry_price = 0.0
         self.cooldown_until = 0
@@ -38,16 +42,43 @@ class LiquidityKraken:
                 return
 
             if action in ["BUY", "STRONG_BUY"] and self.position == 0:
-                if self.dry_run:
-                    print(f"[DRY RUN] LIQUIDITY KRAKEN would BUY {self.config.symbol}")
-                else:
-                    print(f"[LIVE] LIQUIDITY KRAKEN executing BUY on {self.config.symbol}")
+                await self._execute_buy(current_price, decision)
             elif action == "SELL" and self.position > 0:
-                if self.dry_run:
-                    print(f"[DRY RUN] LIQUIDITY KRAKEN would SELL {self.config.symbol}")
-                else:
-                    print(f"[LIVE] LIQUIDITY KRAKEN executing SELL on {self.config.symbol}")
+                await self._execute_sell(current_price, decision)
 
         except Exception as e:
             print(f"[LIQUIDITY KRAKEN] Error: {e}")
+
+    async def _execute_buy(self, price: float, decision: dict):
+        amount_sol = 0.5 * decision.get("suggested_capital_percent", 0.3)   # Conservative for now
+        if amount_sol < 0.05:
+            return
+
+        print(f"[LIQUIDITY KRAKEN] Executing BUY {amount_sol:.4f} SOL → {self.config.symbol}")
+        tx = await self.jupiter.swap_sol_to_token(
+            token_address=self.config.address,
+            amount_sol=amount_sol,
+            slippage=1.5
+        )
+        if tx:
+            self.position = (amount_sol / price) * 0.98
+            self.entry_price = price
+            print(f"[LIQUIDITY KRAKEN] BUY SUCCESS | Tx: {tx[:20]}...")
+
+    async def _execute_sell(self, price: float, decision: dict):
+        if self.position <= 0:
+            return
+        print(f"[LIQUIDITY KRAKEN] Executing SELL")
+        tx = await self.jupiter.swap_token_to_sol(
+            token_address=self.config.address,
+            amount_tokens=self.position,
+            slippage=1.5
+        )
+        if tx:
+            self.position = 0.0
+            self.cooldown_until = time.time() + 300
+            print(f"[LIQUIDITY KRAKEN] SELL SUCCESS | Tx: {tx[:20]}...")
+
+if __name__ == "__main__":
+    print("Liquidity Kraken initialized")
 EOF
