@@ -1,16 +1,16 @@
-cat > master.py << 'EOF'
 import asyncio
 import time
 from liquidity_kraken import LiquidityKraken
 from depth_destroyer import DepthDestroyer
 from tide_titan import TideTitan
 from config import config
+from telegram_notifier import notifier
 
 async def main():
-    DRY_RUN = True   # ← Change to False when ready for real trades
+    DRY_RUN = True
 
     print("🚀 Starting Master Controller - 3 Specialized Trading Bots")
-    print(f"Mode: {'DRY RUN (Safe)' if DRY_RUN else 'LIVE TRADING'}")
+    print(f"Mode: {'DRY RUN' if DRY_RUN else 'LIVE'}")
     print("="*100)
 
     bots = {}
@@ -18,13 +18,12 @@ async def main():
         symbol = config.TOKENS[token_key].symbol
         if "TROLL" in symbol.upper():
             bots[token_key] = LiquidityKraken(token_key, dry_run=DRY_RUN)
-            print(f"✅ Deployed LIQUIDITY KRAKEN → {symbol}")
         elif "WHALE" in symbol.upper():
             bots[token_key] = DepthDestroyer(token_key, dry_run=DRY_RUN)
-            print(f"✅ Deployed DEPTH DESTROYER → {symbol}")
         else:
             bots[token_key] = TideTitan(token_key, dry_run=DRY_RUN)
-            print(f"✅ Deployed TIDE TITAN → {symbol}")
+
+        print(f"✅ Deployed {bots[token_key].__class__.__name__} → {symbol}")
 
     print("\nAll bots deployed. Live monitoring started.\n")
     print("="*100)
@@ -35,7 +34,19 @@ async def main():
         tasks = [bot.tick() for bot in bots.values()]
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        if cycle % 5 == 0:
+        # Poseidon Status Update (every 30 seconds)
+        if cycle % 3 == 0:
+            status_msg = f"""<b>🌊 POSEIDON STATUS REPORT</b>
+Time: {time.strftime('%H:%M:%S')}
+Cycle: {cycle}
+Mode: {'🟡 DRY RUN' if DRY_RUN else '🔴 LIVE'}
+Active Bots: 3
+Tokens Monitored: MM, WHITEWHALE, TROLL
+
+📈 All bots are actively analyzing multi-timeframe data."""
+            await notifier.send_message(status_msg, topic_id=13)
+
+        if cycle % 6 == 0:
             print(f"\n📊 LIVE STATUS - {time.strftime('%H:%M:%S')} (Cycle {cycle})")
             print("-" * 100)
             for key, bot in bots.items():
@@ -50,4 +61,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n\n👋 Master stopped by user.")
-EOF
+    except Exception as e:
+        print(f"💥 Error: {e}")
