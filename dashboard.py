@@ -1,85 +1,83 @@
-import os
-from datetime import datetime
-from typing import Dict, Any
-
+import asyncio
+import time
+from data_fetcher import get_price_in_sol, get_historical_prices
+from agent import Poseidon
 from config import config
 
+token_states = {}
 
-def clear_screen():
-    os.system("cls" if os.name == "nt" else "clear")
-
-
-def simple_sparkline(prices, length=8):
-    """Simple ASCII sparkline"""
-    if len(prices) < 2:
-        return "──────"
-    recent = prices[-length:]
-    min_p, max_p = min(recent), max(recent)
-    if max_p == min_p:
-        return "──────"
+async def monitor_token(token_key: str):
+    token_config = config.TOKENS[token_key]
+    agent = Poseidon()
     
-    spark = "▁▂▃▄▅▆▇█"
-    line = ""
-    for p in recent:
-        idx = int((p - min_p) / (max_p - min_p + 0.000001) * 7)
-        line += spark[idx]
-    return line
-
-
-def print_multi_token_dashboard(all_data: list):
-    clear_screen()
+    print(f"📡 Monitor started for {token_config.symbol}")
     
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    while True:
+        try:
+            current_price = await get_price_in_sol(token_config.address)
+            if current_price <= 0:
+                await asyncio.sleep(5)
+                continue
+
+            prices = await get_historical_prices(token_config.address, limit=400)
+
+            decision = agent.get_risk_adjusted_decision(
+                token_config, 
+                {"price_sol": current_price}, 
+                prices, 
+                bot_name="Dashboard"
+            )
+
+            token_states[token_key] = {
+                "symbol": token_config.symbol,
+                "price": current_price,
+                "score": decision.get("final_score", 0),
+                "action": decision.get("action", "HOLD"),
+                "last_update": time.time()
+            }
+
+        except Exception as e:
+            print(f"Monitor error for {token_config.symbol}: {e}")
+
+        await asyncio.sleep(6)  # Balanced update rate
+
+
+def print_dashboard():
+    print("\n" + "="*120)
+    print(f"🌊 POSEIDON LIVE DASHBOARD - {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*120)
+
+    if not token_states:
+        print("Waiting for first data from monitors...")
+    else:
+        for key, state in token_states.items():
+            symbol = state.get("symbol", key)
+            price = state.get("price", 0)
+            score = state.get("score", 0)
+            action = state.get("action", "HOLD")
+            
+            color = "🟢" if action in ["BUY", "STRONG_BUY"] else "🔴" if action == "SELL" else "⚪"
+            print(f"{color} {symbol:<12} | Price: {price:.8f} SOL | Score: {score:.1f} | Action: {action:<12}")
+
+    print("="*120)
+
+
+async def main():
+    print("Starting Poseidon Live Dashboard...\n")
     
-    print("=" * config.DASHBOARD_WIDTH)
-    print(f"🚀 {config.AGENT_NAME} — PROFESSIONAL MULTI-TOKEN DASHBOARD | {now}")
-    print("=" * config.DASHBOARD_WIDTH)
-    print(f"Monitoring {len(config.TOKENS)} tokens | Mode: {'🟢 LIVE' if not config.DRY_RUN else '🔒 DRY-RUN'} | Data: Birdeye + Jupiter")
-    print("-" * config.DASHBOARD_WIDTH)
+    # Start monitors
+    monitor_tasks = [monitor_token(key) for key in config.TOKENS.keys()]
+    
+    # Dashboard display loop
+    while True:
+        print_dashboard()
+        await asyncio.sleep(8)
 
-    for item in all_data:
-        tc = item["token_config"]
-        md = item["market_data"]
-        dec = item["decision"]
-        
-        symbol = tc.symbol
-        name = tc.name
-        price_sol = md.get("price_sol", 0)
-        usd = md.get("usd_price")
-        score = dec.get("final_score", 0)
-        action = dec.get("action", "HOLD")
-        rec = dec.get("recommendation", "MONITOR")
 
-        # Color coding
-        color = "🟢" if score >= 7.5 else "🟡" if score >= 5 else "🔴"
-        action_color = "🟢" if action in ["BUY", "STRONG_BUY"] else "🔴"
-
-        usd_str = f"${usd:.6f}" if usd and usd > 0 else "N/A"
-
-        print(f"{color} {name:<14} ({symbol})")
-        print(f"   Price : {price_sol:.10f} SOL   |   {usd_str}")
-
-        # Sparkline + Trend
-        history = item.get("history", [])
-        if len(history) > 8:
-            spark = simple_sparkline(history)
-            print(f"   Trend : {spark}  (Recent movement)")
-
-        print(f"   Score : {score:.1f}/10    | Action: {action_color} {action:<8} | Rec: {rec}")
-
-        # Agent Stack
-        stack = dec.get("stack_results", {})
-        if stack:
-            parts = [f"{name[:5]}:{res.get('score',0):.1f}" for name, res in stack.items()]
-            print(f"   Agent : {' | '.join(parts)}")
-
-        # Reasoning
-        reasoning = dec.get("reasoning", [])
-        if reasoning:
-            print(f"   Insight: {reasoning[0][:95]}{'...' if len(reasoning[0]) > 95 else ''}")
-
-        print("-" * 95)
-
-    print("=" * config.DASHBOARD_WIDTH)
-    print("💡 Ctrl+C to stop • Live updates every ~12s • Press any key for manual refresh (coming soon)")
-    print("=" * config.DASHBOARD_WIDTH)
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nDashboard stopped by user.")
+    except Exception as e:
+        print(f"Dashboard crashed: {e}")
