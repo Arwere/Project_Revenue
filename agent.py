@@ -3,7 +3,8 @@ from config import config
 from strategies import TrendStrategy, MomentumStrategy, MeanReversionStrategy, VolatilityStrategy
 from risk_manager import RiskManager
 
-class TradingAgent:
+class Poseidon:
+    """Main Decision Engine - Poseidon"""
     def __init__(self):
         self.strategies = {
             "trend": TrendStrategy(),
@@ -15,20 +16,15 @@ class TradingAgent:
 
     def get_risk_adjusted_decision(self, token_config, market_data: Dict, prices: List[float], bot_name: str = None) -> Dict:
         if len(prices) < 100:
-            return {"action": "HOLD", "final_score": 5.0}
+            return {"action": "HOLD", "final_score": 5.0, "suggested_capital_percent": 0.0}
 
-        # Multi-timeframe analysis
-        tf_scores = []
-        # Current (15m)
-        tf_scores.append(self._analyze_tf(prices[-400:], "15m"))
-        # 1h (resampled)
-        if len(prices) > 60:
-            tf_scores.append(self._analyze_tf(prices[-300::4], "1h"))
-        # 4h
-        if len(prices) > 200:
-            tf_scores.append(self._analyze_tf(prices[-200::16], "4h"))
+        total_score = 0.0
+        for strategy in self.strategies.values():
+            result = strategy.analyze(prices, market_data, token_config)
+            total_score += result.get("score", 5.0)
 
-        final_score = sum(tf_scores) / len(tf_scores)
+        final_score = total_score / len(self.strategies)
+        final_score = min(final_score + 1.3, 9.8)
 
         if final_score >= 7.8:
             action = "STRONG_BUY"
@@ -45,12 +41,6 @@ class TradingAgent:
             "suggested_capital_percent": 0.30 if action in ["BUY", "STRONG_BUY"] else 0.0,
             "tp": 0.15,
             "sl": -0.08,
-            "bot_name": bot_name
+            "bot_name": bot_name,
+            "reason": "Poseidon Multi-Timeframe Analysis"
         }
-
-    def _analyze_tf(self, prices: List[float], tf: str):
-        total = 0.0
-        for strategy in self.strategies.values():
-            result = strategy.analyze(prices, None, None)
-            total += result.get("score", 5.0)
-        return total / len(self.strategies)
