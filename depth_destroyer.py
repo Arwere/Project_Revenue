@@ -1,3 +1,4 @@
+cat > depth_destroyer.py << 'EOF'
 import asyncio
 import time
 from agent import TradingAgent
@@ -7,11 +8,13 @@ from config import config
 class DepthDestroyer:
     """Aggressive volume & momentum bot"""
     
-    def __init__(self, token_key: str):
+    def __init__(self, token_key: str, dry_run=True):
         self.token_key = token_key
         self.config = config.TOKENS[token_key]
         self.agent = TradingAgent()
+        self.dry_run = dry_run
         self.position = 0.0
+        self.entry_price = 0.0
         self.cooldown_until = 0
 
     async def tick(self):
@@ -35,9 +38,16 @@ class DepthDestroyer:
                 return
 
             if action in ["BUY", "STRONG_BUY"] and self.position == 0:
-                print(f"[DEPTH DESTROYER] → BUY SIGNAL on {self.config.symbol}")
+                if self.dry_run:
+                    print(f"[DRY RUN] DEPTH DESTROYER would BUY {self.config.symbol}")
+                else:
+                    print(f"[LIVE] DEPTH DESTROYER executing BUY on {self.config.symbol}")
             elif action == "SELL" and self.position > 0:
-                print(f"[DEPTH DESTROYER] → SELL SIGNAL on {self.config.symbol}")
+                if self.dry_run:
+                    print(f"[DRY RUN] DEPTH DESTROYER would SELL {self.config.symbol}")
+                else:
+                    print(f"[LIVE] DEPTH DESTROYER executing SELL on {self.config.symbol}")
 
         except Exception as e:
             print(f"[DEPTH DESTROYER] Error: {e}")
+EOF
