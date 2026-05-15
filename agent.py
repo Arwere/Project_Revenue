@@ -2,6 +2,7 @@ from typing import Dict, List
 from config import config
 from strategies import TrendStrategy, MomentumStrategy, MeanReversionStrategy, VolatilityStrategy
 from risk_manager import RiskManager
+from claude_brain import claude
 
 class Poseidon:
     def __init__(self):
@@ -12,88 +13,72 @@ class Poseidon:
             "volatility": VolatilityStrategy()
         }
         self.risk_manager = RiskManager()
+        self.use_claude = True   # Set to False if you want pure rules
 
     async def get_risk_adjusted_decision(self, token_config, market_data: Dict, prices: List[float], bot_name: str = None) -> Dict:
-        """
-        Main decision engine with multi-timeframe weighting + conservative risk.
-        """
         if len(prices) < 100:
-            return {
-                "action": "HOLD",
-                "final_score": 5.0,
-                "suggested_capital_percent": 0.0,
-                "tp": 0.0,
-                "sl": 0.0,
-                "reason": "Insufficient data"
+            return {"action": "HOLD", "final_score": 5.0, "suggested_capital_percent": 0.0, "reason": "Insufficient data"}
+
+        # Step 1: Rule-based Technical Score
+        tf_score = self._calculate_multi_tf_score(prices)
+
+        # Step 2: Claude Final Decision (Hybrid)
+        if self.use_claude:
+            context = self._build_claude_context(token_config, market_data, prices, tf_score)
+            claude_decision = await claude.get_decision(context)
+            
+            # Blend rule score with Claude
+            final_score = (tf_score * 0.6) + (claude_decision.get("final_score", 5.0) * 0.4)
+            
+            decision = {
+                "action": claude_decision.get("action", "HOLD"),
+                "final_score": round(final_score, 1),
+                "suggested_capital_percent": claude_decision.get("suggested_capital_percent", 0.0),
+                "tp": claude_decision.get("tp", 0.14),
+                "sl": claude_decision.get("sl", -0.07),
+                "bot_name": bot_name,
+                "reason": claude_decision.get("reason", "Hybrid Decision")
+            }
+        else:
+            # Pure rule-based fallback
+            decision = {
+                "action": "BUY" if tf_score >= 6.8 else "HOLD",
+                "final_score": round(tf_score, 1),
+                "suggested_capital_percent": self.risk_manager.get_conservative_position_size(tf_score, market_data.get("price_sol", 0), token_config),
+                "tp": 0.145,
+                "sl": -0.072,
+                "bot_name": bot_name,
+                "reason": "Pure Technical Rules"
             }
 
-        # === Multi-Timeframe Weighted Analysis ===
-        tf_weights = {
-            "5m":  0.40,
-            "30m": 0.25,
-            "1h":  0.18,
-            "4h":  0.10,
-            "1d":  0.05,
-            "1w":  0.02
-        }
+        return decision
 
+    def _calculate_multi_tf_score(self, prices: List[float]) -> float:
+        tf_weights = {"5m": 0.40, "30m": 0.25, "1h": 0.18, "4h": 0.10, "1d": 0.05, "1w": 0.02}
         tf_scores = []
 
-        # 5m (most recent data)
         tf_scores.append(self._analyze_tf(prices[-400:], tf_weights["5m"]))
+        if len(prices) > 30: tf_scores.append(self._analyze_tf(prices[-300::6], tf_weights["30m"]))
+        if len(prices) > 60: tf_scores.append(self._analyze_tf(prices[-240::12], tf_weights["1h"]))
+        if len(prices) > 200: tf_scores.append(self._analyze_tf(prices[-200::48], tf_weights["4h"]))
 
-        # 30m
-        if len(prices) > 30:
-            tf_scores.append(self._analyze_tf(prices[-300::6], tf_weights["30m"]))
+        return sum(tf_scores)
 
-        # 1h
-        if len(prices) > 60:
-            tf_scores.append(self._analyze_tf(prices[-240::12], tf_weights["1h"]))
-
-        # 4h
-        if len(prices) > 200:
-            tf_scores.append(self._analyze_tf(prices[-200::48], tf_weights["4h"]))
-
-        # 1d
-        if len(prices) > 400:
-            tf_scores.append(self._analyze_tf(prices[-150::192], tf_weights["1d"]))
-
-        final_score = sum(tf_scores)
-
-        # === Decision Logic ===
-        if final_score >= 7.8:
-            action = "STRONG_BUY"
-        elif final_score >= 6.7:
-            action = "BUY"
-        elif final_score <= 4.5:
-            action = "SELL"
-        else:
-            action = "HOLD"
-
-        # === Conservative Capital Allocation ===
-        capital_percent = self.risk_manager.get_conservative_position_size(
-            final_score, market_data.get("price_sol", 0), token_config
-        )
-
-        return {
-            "action": action,
-            "final_score": round(final_score, 1),
-            "suggested_capital_percent": round(capital_percent, 3),
-            "tp": 0.145,          # 14.5% take profit
-            "sl": -0.072,         # -7.2% stop loss
-            "bot_name": bot_name,
-            "reason": "Multi-Timeframe Weighted + Risk Adjusted"
-        }
-
-    def _analyze_tf(self, prices: List[float], weight: float = 1.0) -> float:
-        """Analyze one timeframe and return weighted score"""
+    def _analyze_tf(self, prices: List[float], weight: float) -> float:
         if len(prices) < 30:
             return 5.0 * weight
-
         total = 0.0
         for strategy in self.strategies.values():
             result = strategy.analyze(prices)
             total += result.get("score", 5.0)
+        return (total / len(self.strategies)) * weight
 
-        avg_score = total / len(self.strategies)
-        return avg_score * weight
+    def _build_claude_context(self, token_config, market_data, prices, technical_score):
+        current_price = market_data.get("price_sol", 0)
+        return f"""
+Token: {token_config.symbol}
+Current Price: {current_price}
+Technical Score: {technical_score:.1f}
+Recent Price Trend: {'Up' if prices[-1] > prices[-50] else 'Down' if prices[-1] < prices[-50] else 'Sideways'}
+Volatility: High/Medium/Low (based on data)
+        """
