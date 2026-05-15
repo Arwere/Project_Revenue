@@ -1,56 +1,68 @@
-import os
-from anthropic import AsyncAnthropic
+import httpx
 import json
+import asyncio
+from typing import Dict
 
 class ClaudeBrain:
     def __init__(self):
-        self.client = AsyncAnthropic(api_key="aaron-onboarding-api-key")
-        self.system_prompt = """You are Poseidon, a highly disciplined Solana meme coin trading AI.
-You prioritize capital preservation above all.
-You are cautious with high-volatility tokens.
-You combine technical data with market intuition.
-Always output valid JSON only."""
+        self.api_key = "aaron-onboarding-api-key"
+        self.model = "claude-3-haiku-20240307"
+        self.client = httpx.AsyncClient(timeout=20.0)
 
-    async def get_decision(self, market_context: dict) -> dict:
-        prompt = f"""
-Token: {market_context.get('symbol', 'Unknown')}
-Current Price: {market_context.get('price', 0):.8f} SOL
-Technical Score: {market_context.get('tech_score', 0):.1f}
-Recent Trend: {market_context.get('price_trend', 'Neutral')}
-RSI: {market_context.get('rsi', 'N/A')}
-MACD Hist: {market_context.get('macd_hist', 'N/A')}
-Volatility: {market_context.get('volatility', 'N/A')}
+    async def get_decision(self, context: str) -> Dict:
+        try:
+            prompt = f"""
+You are Poseidon, a professional Solana meme coin trading agent.
+Analyze the following market data and make a clear trading decision.
 
-Analyze the situation and respond with valid JSON only:
+{context}
+
+Respond in valid JSON only with this exact format:
 {{
-  "action": "STRONG_BUY | BUY | HOLD | SELL | AVOID",
-  "confidence": 0.0 to 1.0,
-  "suggested_capital_percent": 0.0 to 1.0,
-  "reason": "short reasoning"
+  "action": "STRONG_BUY | BUY | HOLD | SELL",
+  "final_score": 7.8,
+  "suggested_capital_percent": 0.18,
+  "tp": 0.145,
+  "sl": -0.072,
+  "reason": "Short explanation"
 }}
 """
 
-        try:
-            response = await self.client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=300,
-                temperature=0.3,
-                system=self.system_prompt,
-                messages=[{"role": "user", "content": prompt}]
+            response = await self.client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": self.model,
+                    "max_tokens": 300,
+                    "temperature": 0.4,
+                    "messages": [{"role": "user", "content": prompt}]
+                }
             )
 
-            text = response.content[0].text.strip()
-            decision = json.loads(text)
-            return decision
+            data = response.json()
+            text = data["content"][0]["text"]
+            
+            # Extract JSON from response
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            json_str = text[start:end]
+            
+            return json.loads(json_str)
 
         except Exception as e:
-            print(f"Claude API Error: {e}")
+            print(f"Claude Error: {e}")
+            # Fallback to safe decision
             return {
                 "action": "HOLD",
-                "confidence": 0.5,
+                "final_score": 5.5,
                 "suggested_capital_percent": 0.0,
-                "reason": "Claude unavailable - fallback to HOLD"
+                "tp": 0.0,
+                "sl": 0.0,
+                "reason": "Claude unavailable - fallback"
             }
 
-# Global instance
 claude = ClaudeBrain()
