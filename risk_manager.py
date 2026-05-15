@@ -1,26 +1,21 @@
 from typing import Dict
 
-from config import config
-
-
 class RiskManager:
-    def get_trade_recommendation(self, decision: Dict, current_price: float, token_config=None):
-        final_score = decision.get("final_score", 0)
-        action = decision.get("action", "HOLD")
+    def get_conservative_position_size(self, score: float, current_price: float, token_config) -> float:
+        """Conservative position sizing"""
+        base = 0.25  # Max 25% of available capital per trade
 
-        if final_score >= 6.5 and action in ["BUY", "STRONG_BUY"]:
-            return {
-                "action": "BUY",
-                "size_sol": 0.15,
-                "stop_loss": round(current_price * 0.88, 10),
-                "reason": f"Score {final_score:.1f}"
-            }
+        if score >= 8.0:
+            return base * 0.95
+        elif score >= 7.2:
+            return base * 0.75
+        elif score >= 6.8:
+            return base * 0.55
         else:
-            return {
-                "action": "HOLD",
-                "reason": "Below risk threshold"
-            }
+            return 0.0  # No position if score too low
 
-
-# Global instance
-risk_manager = RiskManager()
+    def get_trade_recommendation(self, decision: Dict, price: float, token_config) -> Dict:
+        """Basic risk check"""
+        if decision.get("suggested_capital_percent", 0) <= 0:
+            return {"action": "BLOCK"}
+        return {"action": "APPROVED"}
