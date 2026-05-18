@@ -1,58 +1,129 @@
 import asyncio
 import time
-from liquidity_kraken import LiquidityKraken
-from depth_destroyer import DepthDestroyer
-from tide_titan import TideTitan
+from datetime import datetime
+import os
+
+# Import core components
 from config import config
-from telegram_notifier import notifier
+from position_manager import PositionManager
+from jupiter_client import JupiterClient
 
-async def main():
-    DRY_RUN = True
-    enabled_tokens = config.get_enabled_tokens()
+# Import specialized bots
+from tide_titan import TideTitan
+from depth_destroyer import DepthDestroyer
+from liquidity_kraken import LiquidityKraken
 
-    print("🚀 Starting Master Controller - Dynamic Trading Bots")
-    print(f"Mode: {'DRY RUN' if DRY_RUN else 'LIVE'} | Enabled Tokens: {len(enabled_tokens)}")
-    print("="*100)
+class MoonTideMaster:
+    def __init__(self, dry_run: bool = True):
+        self.dry_run = dry_run
+        self.position_manager = PositionManager()
+        self.jupiter = JupiterClient()
+        
+        self.bots = {}
+        self.running = False
+        
+        # Initialize enabled bots
+        self._initialize_bots()
 
-    bots = {}
-    bot_mapping = {
-        "MM": TideTitan,
-        "WHITEWHALE": DepthDestroyer,
-        "TROLL": LiquidityKraken,
-    }
+    def _initialize_bots(self):
+        """Create one bot per enabled token"""
+        for token_key, token_config in config.TOKENS.items():
+            # token_config is a TokenConfig dataclass, not a dict
+            if not token_config.enabled:
+                print(f"⏭️  Skipping disabled token: {token_config.symbol}")
+                continue
 
-    for token_key, token_cfg in enabled_tokens.items():
-        BotClass = bot_mapping.get(token_key, TideTitan)
-        bots[token_key] = BotClass(token_key, dry_run=DRY_RUN)
-        print(f"✅ Deployed {BotClass.__name__} → {token_cfg.symbol}")
+            print(f"🚀 Initializing bot for {token_config.symbol} ({token_key})")
 
-    if not bots:
-        print("❌ No tokens enabled!")
-        return
+            if token_key.lower() == "mm" or token_key == "MM":
+                self.bots[token_key] = TideTitan(
+                    token_key, self.position_manager, self.jupiter, self.dry_run
+                )
+            elif token_key.lower() == "whitewhale":
+                self.bots[token_key] = DepthDestroyer(
+                    token_key, self.position_manager, self.jupiter, self.dry_run
+                )
+            elif token_key.lower() == "troll":
+                self.bots[token_key] = LiquidityKraken(
+                    token_key, self.position_manager, self.jupiter, self.dry_run
+                )
+            else:
+                # Default fallback
+                self.bots[token_key] = TideTitan(
+                    token_key, self.position_manager, self.jupiter, self.dry_run
+                )
 
-    print(f"\nAll {len(bots)} bots deployed. Live monitoring started.\n")
-    print("="*100)
+    async def tick_all(self):
+        """Run one cycle for all bots"""
+        tasks = [bot.tick() for bot in self.bots.values()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    cycle = 0
-    while True:
-        cycle += 1
-        tasks = [bot.tick() for bot in bots.values()]
-        await asyncio.gather(*tasks, return_exceptions=True)
+    async def run(self):
+        """Main trading loop"""
+        self.running = True
+        print(f"🌊 Moon Tide Master started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Mode: {'🟢 LIVE' if not self.dry_run else '🔒 DRY-RUN'}")
+        print(f"Active bots: {list(self.bots.keys())}")
+        print("-" * 70)
 
-        if cycle % 5 == 0:
-            print(f"\n📊 LIVE STATUS - {time.strftime('%H:%M:%S')} (Cycle {cycle}) | Active: {len(bots)}")
-            print("-" * 100)
-            for key, bot in bots.items():
-                symbol = config.TOKENS[key].symbol
-                print(f"{bot.__class__.__name__:<20} | {symbol:<12} | Monitoring")
-            print("-" * 100)
+        cycle = 0
+        while self.running:
+            cycle += 1
+            start_time = time.time()
 
-        await asyncio.sleep(10)
+            try:
+                await self.tick_all()
 
+                # Portfolio status every 5 cycles
+                if cycle % 5 == 0:
+                    self._print_portfolio_status()
+
+            except Exception as e:
+                print(f"❌ Master cycle error: {e}")
+
+            elapsed = time.time() - start_time
+            sleep_time = max(10.0 - elapsed, 5.0)
+
+            await asyncio.sleep(sleep_time)
+
+    def _print_portfolio_status(self):
+        """Print summary of all positions"""
+        positions = self.position_manager.get_all_positions()
+        if not positions:
+            print("📊 No open positions")
+            return
+
+        print(f"\n📊 PORTFOLIO STATUS ({len(positions)} open positions)")
+        total_invested = self.position_manager.total_sol_invested
+        print(f"Total Invested : {total_invested:.4f} SOL")
+
+        for token_key, pos in positions.items():
+            if pos.status == "OPEN":
+                pnl = ((pos.amount * pos.entry_price) - pos.sol_invested) / pos.sol_invested * 100 if pos.sol_invested > 0 else 0
+                print(f"   • {pos.symbol:12} | {pos.amount:.4f} tokens @ {pos.entry_price:.8f} SOL | PnL: {pnl:+.2f}%")
+        print("-" * 70)
+
+    def stop(self):
+        self.running = False
+        print("🛑 Moon Tide Master shutting down...")
+
+
+# ====================== ENTRY POINT ======================
 if __name__ == "__main__":
+    import sys
+
+    dry_run = True
+    if len(sys.argv) > 1 and sys.argv[1] in ["--live", "-l", "--real"]:
+        dry_run = False
+        print("⚠️  LIVE MODE ENABLED - Real trades will be executed!")
+
+    master = MoonTideMaster(dry_run=dry_run)
+
     try:
-        asyncio.run(main())
+        asyncio.run(master.run())
     except KeyboardInterrupt:
-        print("\n\n👋 Master stopped.")
+        master.stop()
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"💥 Fatal error: {e}")
+        master.stop()
