@@ -4,16 +4,20 @@ from agent import Poseidon
 from data_fetcher import get_price_in_sol, get_historical_prices
 from telegram_notifier import notifier
 from config import config
+from position_manager import PositionManager
+from jupiter_client import JupiterClient
 
 class TideTitan:
-    def __init__(self, token_key: str, dry_run=True):
+    def __init__(self, token_key: str, position_manager: PositionManager, 
+                 jupiter: JupiterClient, dry_run: bool = True):
         self.token_key = token_key
         self.config = config.TOKENS[token_key]
         self.agent = Poseidon()
+        self.position_manager = position_manager
+        self.jupiter = jupiter
         self.dry_run = dry_run
-        self.position = 0.0
-        self.entry_price = 0.0
         self.cooldown_until = 0
+        self.last_price = 0.0
 
     async def tick(self):
         try:
@@ -21,24 +25,79 @@ class TideTitan:
             if current_price <= 0:
                 return
 
+            self.last_price = current_price
             prices = await get_historical_prices(self.config.address, limit=400)
+
+            # Get decision from agent (technical + Claude)
             decision = await self.agent.get_risk_adjusted_decision(
-                self.config, {"price_sol": current_price}, prices, bot_name="TideTitan"
+                self.config, 
+                {"price_sol": current_price}, 
+                prices, 
+                bot_name="TideTitan"
             )
 
             action = decision.get("action", "HOLD")
             score = decision.get("final_score", 0.0)
 
-            if action != "HOLD" or score >= 6.0:
+            if score >= 5.5 or action != "HOLD":
                 print(f"[TIDE TITAN - {self.config.symbol}] Price: {current_price:.8f} | Score: {score:.1f} | Action: {action}")
 
             if time.time() < self.cooldown_until:
                 return
 
-            if action in ["BUY", "STRONG_BUY"] and self.position == 0:
-                capital = decision.get("suggested_capital_percent", 0.0) * 100
-                msg = f"<b>🟢 TIDE TITAN</b>\n{self.config.symbol}: BUY Signal\nScore: {score:.1f}\nCapital: {capital:.1f}%\nPrice: {current_price:.8f}"
-                await notifier.send_message(msg, topic_id=19)
+            # === 1. EXIT LOGIC (Priority) ===
+            exit_signal = self.position_manager.should_exit(self.token_key, current_price)
+            if exit_signal["action"] == "SELL":
+                percent = exit_signal.get("percent", 1.0)
+                reason = exit_signal["reason"]
+                print(f"🛑 EXIT SIGNAL → {self.config.symbol} | {reason} ({percent*100:.0f}%)")
+                await self._execute_exit(percent, current_price, reason)
+                self.cooldown_until = time.time() + 300  # 5 min cooldown
+                return
+
+            # === 2. ENTRY LOGIC ===
+            if action in ["BUY", "STRONG_BUY"] and not self.position_manager.get_position(self.token_key):
+                suggested_sol = min(decision.get("suggested_capital_percent", 0.15) * 8.0, 2.5)  # conservative
+
+                if suggested_sol < 0.05:
+                    return
+
+                token_amount = suggested_sol / current_price
+
+                if self.position_manager.open_position(
+                    self.token_key, self.config.symbol, current_price, suggested_sol, token_amount
+                ):
+                    msg = f"""<b>🟢 TIDE TITAN BUY</b>
+Symbol: {self.config.symbol}
+Score: {score:.1f}
+Amount: {suggested_sol:.4f} SOL
+Price: {current_price:.8f}"""
+                    await notifier.send_message(msg, topic_id=19)
+
+                    await self.jupiter.execute_swap(
+                        "So11111111111111111111111111111111111111112",  # WSOL
+                        self.config.address,
+                        suggested_sol,
+                        dry_run=self.dry_run
+                    )
+
+                    self.cooldown_until = time.time() + 1800  # 30 min cooldown after entry
 
         except Exception as e:
-            print(f"[TIDE TITAN] Error: {e}")
+            print(f"[TIDE TITAN - {self.config.symbol}] Error in tick: {e}")
+
+    async def _execute_exit(self, percent: float, current_price: float, reason: str):
+        pos = self.position_manager.get_position(self.token_key)
+        if not pos:
+            return
+
+        self.position_manager.close_partial(self.token_key, percent, current_price, reason)
+
+        # Sell tokens back to SOL
+        sell_sol_approx = (pos.amount * percent) * current_price
+        await self.jupiter.execute_swap(
+            self.config.address,
+            "So11111111111111111111111111111111111111112",  # to WSOL
+            sell_sol_approx,
+            dry_run=self.dry_run
+        )
