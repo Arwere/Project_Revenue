@@ -4,16 +4,16 @@ from agent import Poseidon
 from data_fetcher import get_price_in_sol, get_historical_prices
 from telegram_notifier import notifier
 from config import config
-from position_manager import PositionManager
+from portfolio import Portfolio
 from jupiter_client import JupiterClient
 
 class LiquidityKraken:
-    def __init__(self, token_key: str, position_manager: PositionManager, 
+    def __init__(self, token_key: str, portfolio: Portfolio, 
                  jupiter: JupiterClient, dry_run: bool = True):
         self.token_key = token_key
         self.config = config.TOKENS[token_key]
         self.agent = Poseidon()
-        self.position_manager = position_manager
+        self.portfolio = portfolio
         self.jupiter = jupiter
         self.dry_run = dry_run
         self.cooldown_until = 0
@@ -28,7 +28,6 @@ class LiquidityKraken:
             self.last_price = current_price
             prices = await get_historical_prices(self.config.address, limit=400)
 
-            # Get decision from agent
             decision = await self.agent.get_risk_adjusted_decision(
                 self.config, 
                 {"price_sol": current_price}, 
@@ -45,18 +44,18 @@ class LiquidityKraken:
             if time.time() < self.cooldown_until:
                 return
 
-            # === 1. EXIT LOGIC (Priority) ===
-            exit_signal = self.position_manager.should_exit(self.token_key, current_price)
+            # === 1. EXIT LOGIC ===
+            exit_signal = self.portfolio.should_exit(self.token_key, current_price)
             if exit_signal["action"] == "SELL":
                 percent = exit_signal.get("percent", 1.0)
                 reason = exit_signal["reason"]
                 print(f"🛑 EXIT SIGNAL → {self.config.symbol} | {reason} ({percent*100:.0f}%)")
                 await self._execute_exit(percent, current_price, reason)
-                self.cooldown_until = time.time() + 300  # 5 min cooldown
+                self.cooldown_until = time.time() + 300
                 return
 
             # === 2. ENTRY LOGIC ===
-            if action in ["BUY", "STRONG_BUY"] and not self.position_manager.get_position(self.token_key):
+            if action in ["BUY", "STRONG_BUY"] and not self.portfolio.get_position(self.token_key):
                 suggested_sol = min(decision.get("suggested_capital_percent", 0.15) * 8.0, 2.5)
 
                 if suggested_sol < 0.05:
@@ -64,7 +63,7 @@ class LiquidityKraken:
 
                 token_amount = suggested_sol / current_price
 
-                if self.position_manager.open_position(
+                if self.portfolio.open_position(
                     self.token_key, self.config.symbol, current_price, suggested_sol, token_amount
                 ):
                     msg = f"""<b>🟢 LIQUIDITY KRAKEN BUY</b>
@@ -75,29 +74,28 @@ Price: {current_price:.8f}"""
                     await notifier.send_message(msg, topic_id=19)
 
                     await self.jupiter.execute_swap(
-                        "So11111111111111111111111111111111111111112",  # WSOL
+                        "So11111111111111111111111111111111111111112",
                         self.config.address,
                         suggested_sol,
                         dry_run=self.dry_run
                     )
 
-                    self.cooldown_until = time.time() + 1800  # 30 min cooldown after entry
+                    self.cooldown_until = time.time() + 1800
 
         except Exception as e:
             print(f"[LIQUIDITY KRAKEN - {self.config.symbol}] Error in tick: {e}")
 
     async def _execute_exit(self, percent: float, current_price: float, reason: str):
-        pos = self.position_manager.get_position(self.token_key)
+        pos = self.portfolio.get_position(self.token_key)
         if not pos:
             return
 
-        self.position_manager.close_partial(self.token_key, percent, current_price, reason)
+        self.portfolio.close_partial(self.token_key, percent, current_price, reason)
 
-        # Sell tokens back to SOL
         sell_sol_approx = (pos.amount * percent) * current_price
         await self.jupiter.execute_swap(
             self.config.address,
-            "So11111111111111111111111111111111111111112",  # to WSOL
+            "So11111111111111111111111111111111111111112",
             sell_sol_approx,
             dry_run=self.dry_run
         )
